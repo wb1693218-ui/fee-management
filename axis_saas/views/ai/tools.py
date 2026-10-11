@@ -1,6 +1,7 @@
 """Read-only, tenant-scoped tools available to the admin assistant."""
 
 from difflib import get_close_matches
+from datetime import timedelta
 import re
 import unicodedata
 
@@ -17,8 +18,11 @@ from ...models import (
     SchoolClass,
     Staff,
     StaffAttendance,
+    SubstituteAssignment,
     Student,
     StudentAttendance,
+    TimetableEntry,
+    PeriodTeacherAssignment,
 )
 from ..helpers import aggregate_pending_totals, get_student_pending_queryset
 
@@ -418,6 +422,91 @@ def attendance_range_summary(schema_name, start_date, end_date, roman_urdu=True,
             'url': report_url,
         })
     return {'reply': reply, 'actions': actions}
+
+
+def timetable_period_summary(schema_name, period_number, weekday, next_occurrence=True, roman_urdu=True):
+    today = timezone.localdate()
+    days_ahead = (weekday - today.weekday()) % 7
+    if next_occurrence and days_ahead == 0:
+        days_ahead = 7
+    target_date = today + timedelta(days=days_ahead)
+    rows_by_class = {}
+
+    with schema_context(schema_name):
+        period_assignments = PeriodTeacherAssignment.objects.filter(
+            day_of_week=weekday,
+            period_order=period_number,
+        ).select_related(
+            'school_class', 'school_class__wing_category', 'subject', 'teacher',
+        ).order_by('school_class__name', 'school_class__section')
+        for item in period_assignments:
+            rows_by_class[item.school_class_id] = {
+                'school_class': str(item.school_class),
+                'class_name': item.school_class.name,
+                'section': item.school_class.section,
+                'subject': item.subject.name if item.subject_id else '',
+                'teacher': item.teacher.full_name if item.teacher_id else '',
+                'start_time': '',
+                'end_time': '',
+            }
+
+        timetable_entries = TimetableEntry.objects.filter(
+            day_of_week=weekday,
+            period__order=period_number,
+        ).select_related(
+            'school_class', 'school_class__wing_category', 'period', 'subject', 'teacher',
+        ).order_by('school_class__name', 'school_class__section')
+        for item in timetable_entries:
+            rows_by_class.setdefault(item.school_class_id, {
+                'school_class': str(item.school_class),
+                'class_name': item.school_class.name,
+                'section': item.school_class.section,
+                'subject': item.subject.name,
+                'teacher': item.teacher.full_name,
+                'start_time': item.period.start_time.strftime('%H:%M'),
+                'end_time': item.period.end_time.strftime('%H:%M'),
+            })
+
+        substitutes = SubstituteAssignment.objects.filter(
+            date=target_date,
+            day_of_week=weekday,
+            period_order=period_number,
+        ).select_related('school_class', 'substitute_teacher', 'subject')
+        for item in substitutes:
+            row = rows_by_class.get(item.school_class_id)
+            if row:
+                row['teacher'] = item.substitute_teacher.full_name
+                row['substitute'] = True
+                if item.subject_id:
+                    row['subject'] = item.subject.name
+
+    rows = list(rows_by_class.values())
+    weekday_name = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')[weekday]
+    if rows:
+        if roman_urdu:
+            lines = [
+                f"{row['school_class']}: {row['subject'] or 'subject assign nahin'}, "
+                f"{row['teacher'] or 'teacher assign nahin'}"
+                + (f" ({row['start_time']}-{row['end_time']})" if row['start_time'] else '')
+                + (' [substitute]' if row.get('substitute') else '')
+                for row in rows
+            ]
+            reply = f"{target_date.isoformat()} ({weekday_name}) period {period_number}:\n" + '\n'.join(lines)
+        else:
+            lines = [
+                f"{row['school_class']}: {row['subject'] or 'no subject assigned'}, "
+                f"{row['teacher'] or 'no teacher assigned'}"
+                + (f" ({row['start_time']}-{row['end_time']})" if row['start_time'] else '')
+                + (' [substitute]' if row.get('substitute') else '')
+                for row in rows
+            ]
+            reply = f"{target_date.isoformat()} ({weekday_name}), period {period_number}:\n" + '\n'.join(lines)
+    elif roman_urdu:
+        reply = f'{target_date.isoformat()} ({weekday_name}) ko period {period_number} ka timetable record nahin mila.'
+    else:
+        reply = f'No timetable entry found for period {period_number} on {target_date.isoformat()} ({weekday_name}).'
+
+    return {'reply': reply, 'actions': []}
 
 
 def search_defaulters(schema_name, query='', roman_urdu=True, limit=8):

@@ -3,6 +3,8 @@
 import re
 import unicodedata
 
+from django.utils import timezone
+
 from .knowledge import PAGE_CATALOG
 
 
@@ -91,6 +93,53 @@ def extract_class_pending_fee(message):
     return None
 
 
+def extract_timetable_period_question(message):
+    """Return period number, weekday and whether the user explicitly said next."""
+    text = normalize_message(message)
+    period_match = re.search(
+        r'\b(?:period|p)\s*(?P<period_a>\d{1,2})\b|'
+        r'\b(?P<period_b>\d{1,2})(?:st|nd|rd|th)?\s*(?:period|p)\b',
+        text,
+    )
+    if not period_match:
+        return None
+    period_number = int(period_match.group('period_a') or period_match.group('period_b'))
+    if not 1 <= period_number <= 20:
+        return None
+
+    weekdays = {
+        0: ('monday', 'mon', 'somvaar', 'somwar', 'peer'),
+        1: ('tuesday', 'tue', 'mangal', 'mangalwar'),
+        2: ('wednesday', 'wed', 'budh', 'budhwar'),
+        3: ('thursday', 'thu', 'jumeraat', 'jumerat'),
+        4: ('friday', 'fri', 'jumma', 'juma'),
+        5: ('saturday', 'sat', 'hafta', 'haftay'),
+        6: ('sunday', 'sun', 'itwaar', 'itwar'),
+    }
+    weekday = None
+    if re.search(r'\b(today|aaj)\b', text):
+        weekday = timezone.localdate().weekday()
+    for day_number, aliases in weekdays.items():
+        if weekday is None and any(
+            re.search(rf'(?<!\w){re.escape(alias)}(?!\w)', text)
+            for alias in aliases
+        ):
+            weekday = day_number
+            break
+    if weekday is None:
+        return None
+    asks_for_assignment = bool(re.search(
+        r'\b(who|which|teacher|class|subject|kis|kaun|kon|kiska|kiski|me|mein|schedule|timetable)\b',
+        text,
+    ))
+    if not asks_for_assignment:
+        return None
+    next_occurrence = bool(re.search(
+        r'\b(next|coming|upcoming|aglay|agla|agli|aanay wala)\b', text,
+    ))
+    return period_number, weekday, next_occurrence
+
+
 def extract_staff_name_lookup(message):
     text = normalize_message(message)
     name_pattern = r"(?P<name>[a-z0-9][a-z0-9 .'-]{0,78}?)"
@@ -156,6 +205,16 @@ def is_navigation_request(message):
     return bool(re.search(
         r'\b(open|go to|take me|navigate|mark|manage|kholo|khol|dikhao|where is|kahan)\b',
         normalize_message(message),
+    ))
+
+
+def is_help_question(message):
+    text = normalize_message(message)
+    return bool(re.search(
+        r'\b(how to|how do|how can|steps|guide|guidance|help me|explain|samjhao|samjha|'
+        r'kaise|kese|kis tarah|kis trha|kroo|karun|karon|batao|btao|kya karna|'
+        r'kese karein|kaise karein)\b',
+        text,
     ))
 
 

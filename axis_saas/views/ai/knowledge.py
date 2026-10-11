@@ -393,8 +393,18 @@ def retrieve_documentation(message, limit=4):
         return []
     if terms & {'stock', 'inventory', 'maal', 'product', 'products'}:
         terms.update({'inventory', 'product', 'category', 'quantity', 'add', 'update'})
-    if terms & {'kaise', 'kese', 'how', 'karun', 'karo', 'kroo', 'add'}:
-        terms.update({'add', 'create', 'update', 'steps', 'product', 'category'})
+    if terms & {'kaise', 'kese', 'how', 'karun', 'karo', 'kroo', 'batao', 'btao', 'guide', 'guidance', 'samjhao'}:
+        terms.update({'add', 'create', 'update', 'steps', 'manage', 'use', 'guide'})
+    if terms & {'attendance', 'hazri', 'hajri'}:
+        terms.update({'attendance', 'report', 'mark', 'student', 'absent', 'present'})
+    if terms & {'fee', 'fees', 'payment', 'payments', 'wasooli', 'jama'}:
+        terms.update({'fee', 'collection', 'voucher', 'receipt', 'payment', 'balance'})
+    if terms & {'student', 'students', 'bacha', 'bache', 'talib'}:
+        terms.update({'student', 'admission', 'profile', 'records', 'class'})
+    if terms & {'teacher', 'teachers', 'staff', 'ustad'}:
+        terms.update({'staff', 'teacher', 'profile', 'attendance', 'leave'})
+    if terms & {'timetable', 'schedule', 'period', 'periods', 'waqt'}:
+        terms.update({'timetable', 'schedule', 'period', 'assign', 'class', 'teacher'})
     scored = []
     for section in _documentation_sections():
         content = _normalize(f"{section['title']} {section['text']}")

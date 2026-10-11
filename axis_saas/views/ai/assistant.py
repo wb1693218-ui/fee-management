@@ -14,10 +14,12 @@ from .intents import (
     extract_student_name_lookup,
     extract_student_parent_lookup,
     extract_class_pending_fee,
+    extract_timetable_period_question,
     extract_staff_name_lookup,
     extract_fee_balance_student,
     find_page_intent,
     is_attendance_summary_question,
+    is_help_question,
     is_roman_urdu,
     is_navigation_request,
     is_school_data_question,
@@ -34,6 +36,7 @@ from .tools import (
     lookup_students,
     lookup_students_by_parent_name,
     student_fee_balance,
+    timetable_period_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,42 @@ def assistant_api(request, schema_name):
         request.session.pop(history_key, None)
 
     pages = available_pages(tenant, schema_name)
+    requested_path = payload.get('current_path', '') if isinstance(payload, dict) else ''
+    if not isinstance(requested_path, str) or len(requested_path) > 300:
+        requested_path = ''
+    current_page = _current_page(requested_path, pages) if requested_path else 'AXIS school admin'
+    if current_page == 'AXIS school admin':
+        current_page = _current_page(request.path, pages)
+    page = find_page_intent(message, pages)
+    if page is None:
+        page = fuzzy_page_intent(message, pages)
+
+    if is_help_question(message) and (not provider_ready or not allow_provider_data):
+        documentation = retrieve_documentation(
+            f'{message} {current_page}',
+            limit=2,
+        )
+        if documentation:
+            sections = []
+            for section in documentation:
+                excerpt = re.sub(r'(?m)^#{1,6}\s*', '', section['text']).strip()
+                excerpt = re.sub(r'\n{3,}', '\n\n', excerpt)
+                sections.append(f"{section['title']}\n{excerpt[:900]}")
+            actions = []
+            if page:
+                actions.append({
+                    'label': page['label'],
+                    'detail': page['description'],
+                    'url': page['url'],
+                })
+            return JsonResponse({
+                'kind': 'documentation',
+                'reply': '\n\n'.join(sections)[:2000],
+                'actions': actions,
+                'provider_configured': provider_ready,
+                'sources': [section['source'] for section in documentation],
+            })
+
     student_name = extract_student_name_lookup(message)
     if student_name:
         if not tenant.is_feature_enabled('students', 'desktop'):
@@ -237,9 +276,25 @@ def assistant_api(request, schema_name):
         _remember_turn(request, history_key, message, result['reply'], allow_provider_data)
         return JsonResponse(result)
 
-    page = find_page_intent(message, pages)
-    if page is None:
-        page = fuzzy_page_intent(message, pages)
+    timetable_question = extract_timetable_period_question(message)
+    if timetable_question:
+        if not tenant.is_feature_enabled('timetable_management', 'desktop'):
+            return JsonResponse({
+                'kind': 'local_only',
+                'reply': 'Time-table management is not enabled for this school.',
+                'actions': [],
+            })
+        result = timetable_period_summary(
+            schema_name,
+            timetable_question[0],
+            timetable_question[1],
+            next_occurrence=timetable_question[2],
+            roman_urdu=roman_urdu,
+        )
+        result['kind'] = 'timetable_lookup'
+        _remember_turn(request, history_key, message, result['reply'], allow_provider_data)
+        return JsonResponse(result)
+
     if page and is_navigation_request(message):
         if roman_urdu:
             reply = f"{page['label']} ka page yahan khol sakte hain."
@@ -266,12 +321,6 @@ def assistant_api(request, schema_name):
             )
         return JsonResponse({'kind': 'local_only', 'reply': reply, 'actions': []})
 
-    requested_path = payload.get('current_path', '') if isinstance(payload, dict) else ''
-    if not isinstance(requested_path, str) or len(requested_path) > 300:
-        requested_path = ''
-    current_page = _current_page(requested_path, pages) if requested_path else 'AXIS school admin'
-    if current_page == 'AXIS school admin':
-        current_page = _current_page(request.path, pages)
     if allow_provider_data:
         history = request.session.get(history_key, [])
     else:
@@ -288,11 +337,9 @@ def assistant_api(request, schema_name):
         provider_data_consent=allow_provider_data,
     )
     if turn.get('provider_status') == 'unconfigured':
-        asks_how_to = bool(re.search(
-            r'\b(how to|how do i|steps|kaise|kese|kis tarah)\b',
-            message.lower(),
-        ))
-        documentation = retrieve_documentation(message, limit=1) if asks_how_to else []
+        documentation = retrieve_documentation(
+            f'{message} {current_page}', limit=2,
+        ) if is_help_question(message) else []
         if documentation:
             section = documentation[0]
             excerpt = re.sub(r'(?m)^#{1,6}\s*', '', section['text']).strip()
